@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Expression Surface</title>
+    <style>
+        :root {
+            --bg-color: #0b0f19;
+            --panel-bg: rgba(22, 27, 34, 0.75);
+            --border-color: rgba(255, 255, 255, 0.1);
+            --text-primary: #f0f6fc;
+            --text-secondary: #8b949e;
+            --accent-gold: #f1e05a;
+            --pressed-white: #ffffff;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            -webkit-touch-callout: none;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            touch-action: none;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 16px;
+            background: var(--panel-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-color);
+            font-size: 14px;
+        }
+
+        header strong {
+            font-weight: 600;
+            letter-spacing: -0.3px;
+        }
+
+        header small {
+            color: var(--text-secondary);
+            font-size: 12px;
+            margin-left: 8px;
+        }
+
+        .controls-nav {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        button.btn {
+            background: rgba(255, 255, 255, 0.08);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button.btn:active, button.btn.active {
+            background: rgba(255, 255, 255, 0.2);
+            border-color: var(--accent-gold);
+            color: var(--accent-gold);
+        }
+
+        main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            position: relative;
+        }
+
+        canvas {
+            flex: 1;
+            width: 100%;
+            height: 100%;
+            display: block;
+            cursor: crosshair;
+        }
+
+        .footer-info {
+            position: absolute;
+            bottom: 12px;
+            left: 0;
+            right: 0;
+            text-align: center;
+            font-size: 11px;
+            color: var(--text-secondary);
+            pointer-events: none;
+            display: flex;
+            justify-content: space-between;
+            padding: 0 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <header>
+        <div>
+            <strong>Expression Surface</strong>
+            <small>HTML5 / Web Audio</small>
+        </div>
+        <div class="controls-nav">
+            <button class="btn active" id="modeBtn">Poly / Glide</button>
+            <button class="btn" id="registerBtn">Register: C3</button>
+        </div>
+    </header>
+
+    <main>
+        <canvas id="surfaceCanvas"></canvas>
+        <div class="footer-info">
+            <span id="instructionText">Touch to play · drag to glide</span>
+            <span id="registerDisplay">Octave: 3</span>
+        </div>
+    </main>
+
+    <script>
+        const canvas = document.getElementById('surfaceCanvas');
+        const ctx = canvas.getContext('2d');
+        const instructionText = document.getElementById('instructionText');
+        const registerDisplay = document.getElementById('registerDisplay');
+        const registerBtn = document.getElementById('registerBtn');
+
+        let audioCtx = null;
+        let activeVoices = new Map(); // identifier -> { osc, gain, freq }
+        let currentOctave = 3;
+        const baseFrequencies = [
+            130.81, 146.83, 164.81, 174.61, 196.00, 220.00, 246.94, // C3 to B3
+            261.63, 293.66, 329.63, 349.23, 392.00, 440.00, 493.88  // C4 to B4
+        ];
+
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth * window.devicePixelRatio;
+            canvas.height = (window.innerHeight - 50) * window.devicePixelRatio;
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Register cycle
+        registerBtn.addEventListener('click', () => {
+            currentOctave = currentOctave === 3 ? 4 : 3;
+            registerBtn.textContent = `Register: C${currentOctave}`;
+            registerDisplay.textContent = `Octave: ${currentOctave}`;
+        });
+
+        function getFrequencyFromCoordinates(x, y) {
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+            
+            // X axis maps to pitch scale across columns/notes
+            const numNotes = 12;
+            const noteIndex = Math.floor((x / width) * numNotes);
+            const clampedIndex = Math.max(0, Math.min(numNotes - 1, noteIndex));
+            
+            // Base notes pentatonic/chromatic scale mapping
+            const scale = [261.63, 277.18, 293.66, 311.13, 329.63, 349.23, 369.99, 392.00, 415.30, 440.00, 466.16, 493.88];
+            let freq = scale[clampedIndex] * Math.pow(2, currentOctave - 4);
+            
+            // Y axis maps to fine filter cutoff or pitch bend modulation
+            const normalizedY = 1 - (y / height);
+            return { freq, normalizedY, noteIndex: clampedIndex };
+        }
+
+        function startTone(id, x, y) {
+            initAudio();
+            const { freq, normalizedY, noteIndex } = getFrequencyFromCoordinates(x, y);
+
+            if (activeVoices.has(id)) {
+                updateTone(id, x, y);
+                return;
+            }
+
+            const osc = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            const filter = audioCtx.createBiquadFilter();
+
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+
+            filter.type = 'lowpass';
+            filter.frequency.setValueAtTime(200 + normalizedY * 3000, audioCtx.currentTime);
+            filter.Q.value = 4;
+
+            gainNode.gain.setValueAtTime(0.001, audioCtx.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.15, audioCtx.currentTime + 0.05);
+
+            osc.connect(filter);
+            filter.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+
+            osc.start();
+
+            activeVoices.set(id, { osc, gainNode, filter, x, y, freq, noteIndex });
+        }
+
+        function updateTone(id, x, y) {
+            if (!activeVoices.has(id)) return;
+            const voice = activeVoices.get(id);
+            const { freq, normalizedY, noteIndex } = getFrequencyFromCoordinates(x, y);
+
+            voice.x = x;
+            voice.y = y;
+            voice.freq = freq;
+            voice.noteIndex = noteIndex;
+
+            if (audioCtx) {
+                voice.osc.frequency.setTargetAtTime(freq, audioCtx.currentTime, 0.05);
+                voice.filter.frequency.setTargetAtTime(200 + normalizedY * 3000, audioCtx.currentTime, 0.05);
+            }
+        }
+
+        function stopTone(id) {
+            if (!activeVoices.has(id)) return;
+            const voice = activeVoices.get(id);
+
+            if (audioCtx) {
+                voice.gainNode.gain.setValueAtTime(voice.gainNode.gain.value, audioCtx.currentTime);
+                voice.gainNode.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.1);
+                setTimeout(() => {
+                    try { voice.osc.stop(); voice.osc.disconnect(); } catch(e) {}
+                }, 100);
+            }
+
+            activeVoices.delete(id);
+        }
+
+        // Event Handlers for Touch and Mouse
+        canvas.addEventListener('pointerdown', (e) => {
+            startTone(e.pointerId, e.offsetX, e.offsetY);
+        });
+
+        canvas.addEventListener('pointermove', (e) => {
+            if (activeVoices.has(e.pointerId)) {
+                updateTone(e.pointerId, e.offsetX, e.offsetY);
+            }
+        });
+
+        canvas.addEventListener('pointerup', (e) => {
+            stopTone(e.pointerId);
+        });
+
+        canvas.addEventListener('pointercancel', (e) => {
+            stopTone(e.pointerId);
+        });
+
+        // Render Loop
+        function draw() {
+            ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+
+            const width = canvas.clientWidth;
+            const height = canvas.clientHeight;
+            const cols = 12;
+            const colWidth = width / cols;
+
+            // Draw grid lines & notes
+            for (let i = 0; i < cols; i++) {
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(i * colWidth, 0, colWidth, height);
+            }
+
+            // Draw active touches/voices
+            activeVoices.forEach((voice, id) => {
+                // Column highlight
+                ctx.fillStyle = 'rgba(241, 224, 90, 0.08)';
+                ctx.fillRect(voice.noteIndex * colWidth, 0, colWidth, height);
+
+                // Glow point
+                ctx.beginPath();
+                ctx.arc(voice.x, voice.y, 35, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(241, 224, 90, 0.2)';
+                ctx.fill();
+
+                // Core touch circle (White when pressed, Gold matching pitch)
+                ctx.beginPath();
+                ctx.arc(voice.x, voice.y, 16, 0, Math.PI * 2);
+                ctx.fillStyle = '#ffffff';
+                ctx.shadowColor = '#f1e05a';
+                ctx.shadowBlur = 15;
+                ctx.fill();
+                ctx.shadowBlur = 0; // reset
+            });
+
+            requestAnimationFrame(draw);
+        }
+
+        draw();
+    </script>
+</body>
+</html>
